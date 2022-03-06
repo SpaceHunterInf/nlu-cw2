@@ -110,6 +110,7 @@ class LSTMEncoder(Seq2SeqEncoder):
         """ Performs a single forward pass through the instantiated encoder sub-network. """
         # Embed tokens and apply dropout
         batch_size, src_time_steps = src_tokens.size()
+        #print('batch size:{}'.format(batch_size))
         src_embeddings = self.embedding(src_tokens)
         _src_embeddings = F.dropout(src_embeddings, p=self.dropout_in, training=self.training)
 
@@ -151,6 +152,16 @@ class LSTMEncoder(Seq2SeqEncoder):
                 return torch.cat([outs[0: outs.size(0): 2], outs[1: outs.size(0): 2]], dim=2)
             final_hidden_states = combine_directions(final_hidden_states)
             final_cell_states = combine_directions(final_cell_states)
+        
+        #1.final_hidden_states.size = [D*self.num_layers, batch_size, self.hidden_size]
+        # final_cell_state.size = [D*self.num_layers, batch_size, self.hidden_size]. D is 2 if 
+        # self.bidirectional is True, otherwise D = 1.
+        #2.When self.bidirectional is True the nn.LSTM model become a bidirectional LSTM, we double
+        # the initial cell state and hidden state (1 for left to right, the other for right to left)
+        # this will also double the output hidden state and cell state size, and we'll concatenate and
+        # flatten them.
+        #3.Hidden states are states outputed by layers of LSTM cells, Cell states are states that LSTM cells
+        # retains and passed on to other cells as long-term memory.
         '''___QUESTION-1-DESCRIBE-A-END___'''
 
         # Generate mask zeroing-out padded positions in encoder inputs
@@ -173,7 +184,6 @@ class AttentionLayer(nn.Module):
         # tgt_input has shape = [batch_size, input_dims]
         # encoder_out has shape = [src_time_steps, batch_size, output_dims]
         # src_mask has shape = [src_time_steps, batch_size]
-
         # Get attention scores
         # [batch_size, src_time_steps, output_dims]
         encoder_out = encoder_out.transpose(1, 0)
@@ -192,13 +202,30 @@ class AttentionLayer(nn.Module):
         3.  Why do we need to apply a mask to the attention scores?
         '''
         if src_mask is not None:
+            #print(src_mask.size())
             src_mask = src_mask.unsqueeze(dim=1)
             attn_scores.masked_fill_(src_mask, float('-inf'))
+
+            #print(src_mask.size())
+            #print(encoder_out.size())
 
         attn_weights = F.softmax(attn_scores, dim=-1)
         attn_context = torch.bmm(attn_weights, encoder_out).squeeze(dim=1)
         context_plus_hidden = torch.cat([tgt_input, attn_context], dim=1)
         attn_out = torch.tanh(self.context_plus_hidden_projection(context_plus_hidden))
+        #1.src_mask.size = [batch_size, 1, src_time_steps]
+        # atten_weights.size = [batch_size, 1, src_time_steps]
+        # atten_context.size = [batch_size, output_dims]
+        # context_plus_hidden = [batch_size, input_dims + output_dims]
+        # attn_out = [batch_size, output_dims]
+        #2. Firstly, we compute the alignment vector for each batch by scoring
+        # current encoder output and current target input against current encoder
+        # output and target input over all time steps. Then we take softmax gives us
+        # a distribution in (0,1]. Then use torch.bmm we obtained context vector as
+        # a weighted average for each batches.  
+        #3. Remember the fact we are using decoder output as the training input of our
+        #model, if we do not apply the mask, our model could 'cheat' for best output
+        #weights by directly copying from golden label, which is an undesired behaviour.
         '''___QUESTION-1-DESCRIBE-B-END___'''
 
         return attn_out, attn_weights.squeeze(dim=1)
@@ -214,6 +241,16 @@ class AttentionLayer(nn.Module):
         '''
         projected_encoder_out = self.src_projection(encoder_out).transpose(2, 1)
         attn_scores = torch.bmm(tgt_input.unsqueeze(dim=1), projected_encoder_out)
+        #1.projected_encoder_out.size = [batch_size, output_dims, src_time_steps]
+        # tgt_input.unsqueeze.size = [batch_size, 1, input_dims]
+        # input_dim == output_dim ==> attn_score.size = [batch_size, 1, src_time_steps]
+        #2.The score is computed using general scoring function from Luong's paper.
+        #3.The src_projection acts as W_a matrix and then the projected_encoder_out 
+        #is the product of this matrix and encoder output vector at current time step.
+        #We do this for every time step, we obtain a matrix containing projected 
+        #encoder output over all timesteps
+        #Thus we need to use torch.bmm to multiply target hidden state vector to obtain
+        #final score as a vector over all time step to compute softmax later.
         '''___QUESTION-1-DESCRIBE-C-END___'''
 
         return attn_scores
@@ -299,6 +336,8 @@ class LSTMDecoder(Seq2SeqDecoder):
             tgt_hidden_states = [torch.zeros(tgt_inputs.size()[0], self.hidden_size) for i in range(len(self.layers))]
             tgt_cell_states = [torch.zeros(tgt_inputs.size()[0], self.hidden_size) for i in range(len(self.layers))]
             input_feed = tgt_embeddings.data.new(batch_size, self.hidden_size).zero_()
+        
+        #1. cached_state = 
         '''___QUESTION-1-DESCRIBE-D-END___'''
 
         # Initialize attention output node
