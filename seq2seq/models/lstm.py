@@ -327,7 +327,7 @@ class LSTMDecoder(Seq2SeqDecoder):
         1.  Add tensor shape annotation to each of the output tensor
         2.  Describe how the decoder state is initialized. 
         3.  When is cached_state == None? 
-        4.  What role does input_feed play?
+        4.  What role does input_feed play?  
         '''
         cached_state = utils.get_incremental_state(self, incremental_state, 'cached_state')
         if cached_state is not None:
@@ -337,7 +337,19 @@ class LSTMDecoder(Seq2SeqDecoder):
             tgt_cell_states = [torch.zeros(tgt_inputs.size()[0], self.hidden_size) for i in range(len(self.layers))]
             input_feed = tgt_embeddings.data.new(batch_size, self.hidden_size).zero_()
         
-        #1. cached_state = 
+        #1. cached_state is not a tensor, just 3 variables below
+        # tgt_hidden_states = [len(self.layers), batch_size, self.hidden_size]
+        # tgt_cell_states = [len(self.layers), batch_size, self.hidden_size]
+        # input_feed = [batch_size, self.hidden_size]
+        #2. The decoder states are intialized from cached_states which is the 
+        # previous decoder state. If there is no previous decoder states, cache_state
+        # will return None, then we intialize all decoder states to zero tensors
+        #3. cache_state is none if incremental_state is none, or full_key is not in
+        #incremental_state, which means there is no cached previous decoder statesd
+        #4. input_feed is the decoder hidden state of previous time step if attention
+        # is not used, otherwise it's the attentional hidden state of previous time step
+        #by using the attention layer we've defined. Then current token embedding will be  
+        #concatenated with it for further computation.
         '''___QUESTION-1-DESCRIBE-D-END___'''
 
         # Initialize attention output node
@@ -381,6 +393,18 @@ class LSTMDecoder(Seq2SeqDecoder):
 
             input_feed = F.dropout(input_feed, p=self.dropout_out, training=self.training)
             rnn_outputs.append(input_feed)
+            #1.input_feed.size = [batch_size, self.hidden_size]
+            # step_attn_weights.size = [batch_size, src_time_steps]
+            #2.Attention is integerated by the fact that input_feed is
+            #calculated as a attention vector and will be concatenated 
+            #with next target embeddings and feed into decoder.
+            #3. The previous target state is given to calculate the 
+            #attention vector of this time step over all time steps
+            #in the encoder hidden state output.
+            #4. Using dropout layer we randomly change entries in the 
+            #attention vector to 0. This could prevent model from overfitting
+            #and prediction performance more robust without relying too much
+            #on previous states.
             '''___QUESTION-1-DESCRIBE-E-END___'''
 
         # Cache previous states (only used during incremental, auto-regressive generation)
