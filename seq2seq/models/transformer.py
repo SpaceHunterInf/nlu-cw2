@@ -100,6 +100,16 @@ class TransformerEncoder(Seq2SeqEncoder):
         3.  Why can't we use only the embeddings similar to for the LSTM? 
         '''
         embeddings += self.embed_positions(src_tokens)
+        #1. embeddings.size = [batch_size, src_time_steps, num_features]
+        #2. Without the positional embedding, the word order in a sequence
+        #is ignored, makes any permutation of sequence having same classification
+        #regardless of the weights we learn. Thus, we are introducing this positional
+        #embedding to make our model sensitive to the word order.
+        #3. Consider transformer is only a fancy preprocessing of the embeddings,
+        #and it's passing through a multi-layer perceptrons. However, LSTM is an RNN
+        #architecture which already includes word order information by giving model 
+        #sequential input at each time step. This temporal input already includes word
+        #order. Thus, there is no need to add positional embeddings again.
         '''
         ___QUESTION-6-DESCRIBE-A-END___
         '''
@@ -110,6 +120,10 @@ class TransformerEncoder(Seq2SeqEncoder):
 
         # Compute padding mask for attention
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
+        # print(self.padding_idx)
+        # print('is this the palce ?')
+        # print(encoder_padding_mask.size())
+        # print(encoder_padding_mask)
         if not encoder_padding_mask.any():
             encoder_padding_mask = None
 
@@ -192,10 +206,22 @@ class TransformerDecoder(Seq2SeqDecoder):
             4.  Why do we not need a mask for incremental decoding?
             '''
             self_attn_mask = self.buffered_future_mask(forward_state) if incremental_state is None else None
+            #print(self_attn_mask)
+            #print(self_attn_mask.size())
+            #1. self_attn_mask.size = [tgt_time_steps, tgt_time_steps]
+            #2. In the decoder, we are using self-attention as an autoregressive
+            #model. Thus, we don't want the model to look ahead in the time steps.
+            #Therefore we mask all the future weights to -inf.
+            #3. In the encoder, we self-attention needs to be learnt over all context
+            #which are words from either left or right direction.
+            #4. In incremental ecoding, we are giving tgt_inputs one by one, only the 
+            #most recent time step. Since there are no future words given, we don't 
+            #need the mask for future words.
             '''
             ___QUESTION-6-DESCRIBE-B-END___
-            '''
-
+            ''' 
+            # print('encoder_state')
+            # print(encoder_state.size())
             forward_state, layer_attn = layer(state=forward_state,
                                               encoder_out=encoder_state,
                                               self_attn_mask=self_attn_mask,
@@ -222,6 +248,11 @@ class TransformerDecoder(Seq2SeqDecoder):
             4.  What would the output represent if features_only=True?
             '''
             forward_state = self.embed_out(forward_state)
+            #1. forward_state.size = [batch_size, tgt_time_steps, len(dictionary)]
+            #2. We are predicting words, and the dictionary of words size does not
+            #necessarily match with the number of features we have.
+            #3. repeated question
+            #4. representing the features we've learned, the contextual word embeddings
             '''
             ___QUESTION-6-DESCRIBE-C-END___
             '''

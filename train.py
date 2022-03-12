@@ -13,7 +13,7 @@ from seq2seq.data.dictionary import Dictionary
 from seq2seq.data.dataset import Seq2SeqDataset, BatchSampler
 from seq2seq.models import ARCH_MODEL_REGISTRY, ARCH_CONFIG_REGISTRY
 
-
+import pickle
 def get_args():
     """ Defines training-specific hyper-parameters. """
     parser = argparse.ArgumentParser('Sequence to Sequence Model')
@@ -94,6 +94,10 @@ def main(args):
     bad_epochs = 0
     best_validate = float('inf')
 
+    train_loss = []
+    valid_loss = []
+    val_perplex = []
+
     for epoch in range(last_epoch + 1, args.max_epoch):
         train_loader = \
             torch.utils.data.DataLoader(train_dataset, num_workers=1, collate_fn=train_dataset.collater,
@@ -123,13 +127,20 @@ def main(args):
             2.  Add line-by-line description about the following lines of code do.
             '''
             output, _ = model(sample['src_tokens'], sample['src_lengths'], sample['tgt_inputs'])
-
+            #output.size = [batch_size, tgt_time_steps, len(dictionary)]
+            #compute the output from model given all inputs
             loss = \
                 criterion(output.view(-1, output.size(-1)), sample['tgt_tokens'].view(-1)) / len(sample['src_lengths'])
+            #compute loss function as cross entropy loss of output over all possbile tokens for target language
             loss.backward()
+            #backpropagate the loss over the network
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
+            #grad_norm is a scalar, the total norm of all parameters
+            #clipping the gradient to mitigate the problem of exploding gradients
             optimizer.step()
+            #apply gradient descent, update all parameters as w = w - learning_rate * w.grad
             optimizer.zero_grad()
+            #flush all previous gradients for computing new gradients in the next iteration.
             '''___QUESTION-1-DESCRIBE-F-END___'''
 
             # Update statistics for progress bar
@@ -147,7 +158,10 @@ def main(args):
             value / len(progress_bar)) for key, value in stats.items())))
 
         # Calculate validation loss
-        valid_perplexity = validate(args, model, criterion, valid_dataset, epoch)
+        valid_perplexity, val_loss = validate(args, model, criterion, valid_dataset, epoch)
+        train_loss.append(stats['loss']/ len(progress_bar))
+        valid_loss.append(val_loss)
+        val_perplex.append(valid_perplexity)
         model.train()
 
         # Save checkpoints
@@ -163,7 +177,10 @@ def main(args):
         if bad_epochs >= args.patience:
             logging.info('No validation set improvements observed for {:d} epochs. Early stop!'.format(args.patience))
             break
-
+    
+    log_dict = {'train_loss': train_loss, 'valid_loss':valid_loss, 'valid_perplexity':val_perplex}
+    with open('log_info.pkl', 'wb') as f:
+        pickle.dump(log_dict, f)
 
 def validate(args, model, criterion, valid_dataset, epoch):
     """ Validates model performance on a held-out development set. """
@@ -199,7 +216,7 @@ def validate(args, model, criterion, valid_dataset, epoch):
         'Epoch {:03d}: {}'.format(epoch, ' | '.join(key + ' {:.3g}'.format(value) for key, value in stats.items())) +
         ' | valid_perplexity {:.3g}'.format(perplexity))
 
-    return perplexity
+    return perplexity, stats['valid_loss']
 
 
 if __name__ == '__main__':

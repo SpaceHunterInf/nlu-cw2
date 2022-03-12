@@ -34,7 +34,16 @@ class TransformerEncoderLayer(nn.Module):
         2.  What is the purpose of encoder_padding_mask? 
         3.  What will the output shape of `state' Tensor be after multi-head attention?
         '''
+
         state, _ = self.self_attn(query=state, key=state, value=state, key_padding_mask=encoder_padding_mask)
+
+        #1. encoder_padding_mask.size = [batch_size, seq_len]. seq_len is a fix number
+        #which is length you want to unify each sequence as the same.
+        # state.size (before self.self_attn) = [src_time_steps, batch_size, num_features]
+        #2. The preprocessing includes padding the input sequence until
+        #they have the same length. The encoder_padding_mask ensures the model
+        #does not pay any attention to these paddings.
+        #3. The size after would be [src_time_steps, batch_size, num_features]
         '''
         ___QUESTION-6-DESCRIBE-D-END___
         '''
@@ -123,6 +132,17 @@ class TransformerDecoderLayer(nn.Module):
                                         value=encoder_out,
                                         key_padding_mask=encoder_padding_mask,
                                         need_weights=need_attn or (not self.training and self.need_attn))
+        #1.state.size = [tgt_time_steps, batch_size, embed_dim]
+        #attn.size = [num_heads, batch_size, tgt_time_steps, encoder_out.size(0)]
+        #encoder_out = [tgt_time_steps, batch_size, embed_dim]
+        #2. self-attention only exist within a decoder or encoder. However, encoder attention
+        #is using the information from encoder in decoder. It's taking the key and value of encoder_out
+        #and use the query of the decoder hidden state. It's trying to find out the relationship
+        #between tokens in source input and the current output of the decoder.
+        #3. key_padding_mask is preventing the model pay attention to the paddings we add to unify the
+        #length of the sequences. attn_mask preventing th decoder to look ahead of and pay attention to 
+        # future words we've not generated yet.
+        #4. Since attn_mask is already used in self-attention layer before, we don't need to re-apply it.
         '''
         ___QUESTION-6-DESCRIBE-E-END___
         '''
@@ -211,14 +231,88 @@ class MultiHeadAttention(nn.Module):
         # attn_weights is the combined output of h parallel heads of Attention(Q,K,V) in Vaswani et al. 2017
         # attn_weights must be size [num_heads, batch_size, tgt_time_steps, key.size(0)]
         # TODO: REPLACE THESE LINES WITH YOUR IMPLEMENTATION ------------------------ CUT
-        attn = torch.zeros(size=(tgt_time_steps, batch_size, embed_dim))
-        attn_weights = torch.zeros(size=(self.num_heads, batch_size, tgt_time_steps, -1)) if need_weights else None
+        #attn = torch.zeros(size=(tgt_time_steps, batch_size, embed_dim))
+        #attn_weights = torch.zeros(size=(self.num_heads, batch_size, tgt_time_steps, -1)) if need_weights else None
+        # print('inside multihead attention')
+        # print(key.size(0))
+        # print(key.size())
+        # print(tgt_time_steps)
+
+        #Step 1 Projection of Q, K, V Matrices
+
+        projected_k = self.k_proj(key) # projected_k.size = [tgt_time_steps, batch_size, embed_dim]
+        projected_v = self.v_proj(value) # projected_v.size = [tgt_time_steps, batch_size, embed_dim]
+        projected_q = self.q_proj(query) # projected_q.size = [tgt_time_steps, batch_size, embed_dim]
+        # print(projected_k.size())
+        projected_k = projected_k.contiguous().view(-1, batch_size, self.num_heads, self.head_embed_size)
+        projected_v = projected_v.contiguous().view(-1, batch_size, self.num_heads, self.head_embed_size)
+        projected_q = projected_q.contiguous().view(-1, batch_size, self.num_heads, self.head_embed_size)
+        #Split concatenated embeddings into each heads
+
+        keys = projected_k.contiguous().view(-1, batch_size * self.num_heads, self.head_embed_size)
+        values = projected_v.contiguous().view(-1, batch_size * self.num_heads, self.head_embed_size)
+        query = projected_q.contiguous().view(-1, batch_size * self.num_heads, self.head_embed_size)
+        #Regroup batch size and heads for matrix multiplication
+
+        transposed_keys = keys.transpose(0,1).contiguous().transpose(1,2).contiguous() #transposed_keys.size = [batch_size * self.num_heads, self.head_embed_size, tgt_time_steps]
+        query = query.transpose(0,1).contiguous() # query.size = [batch_size * self.num_heads, tgt_time_steps, self.head_embed_size]
+        values = values.transpose(0,1).contiguous() # values.size = [batch_size * self.num_heads, tgt_time_steps, self.head_embed_size]
+
+        #Step 2 Calculate Attention weightes with regards to masks
+        attention_kqv = torch.bmm(query, transposed_keys) / self.head_scaling #attention_kqv.size = [batch_size * self.num_heads, tgt_time_steps, tgt_time_steps]
+        # print('detect nan in attention_kqv before mask')
+        # print(torch.isnan(attention_kqv).any())
+        if key_padding_mask != None:
+            #key_padding.size = [batch_size, tgt_time_step]
+            key_padding_mask = key_padding_mask.unsqueeze(1).repeat(self.num_heads, 1, 1) # key_padding_mask.size = [self.num_heads* batch_size, 1, tgt_time_steps]
+            attention_kqv.masked_fill(key_padding_mask, float('-inf'))
+            # print('detect nan in attention_kqv after key mask')
+            # print(torch.isnan(attention_kqv).any())
+
+        if attn_mask != None:
+            #attn_mask.size = [tgt_time_steps, tgt_time_steps]
+            attn_mask = attn_mask.unsqueeze(0)# attn_mask = [1,tgt_time_steps, tgt_time_steps]
+            attention_kqv = torch.add(attention_kqv, attn_mask)
+            # print('detect nan in attention_kqv after key attn_mask')
+            # print(torch.isnan(attention_kqv).any())
+
+        #Step 3 Calcualte final attentional outputs
+        # print(attention_kqv.size())
+        # print(values.size())
+        # print('dected nan in value')
+        # print(torch.isnan(values).any())
+        attention_kqv = torch.softmax(attention_kqv, -1)
+        multi_head = torch.bmm(attention_kqv, values) #multi_head.size = [batch_size * self.num_heads, tgt_time_steps, self.head_embed_size]
+        # print('detect nan in attn in value product')
+        # print(torch.isnan(multi_head).any())
+        if torch.isnan(multi_head).any():
+            # print(values)
+            # print(attention_kqv)
+            # print(multi_head)
+            raise SystemExit('error in code want to exit')
+        multi_head = multi_head.transpose(0,1) #multi_head.size = [tgt_time_steps, batch_size * self.num_heads, self.head_embed_size]
+        #print(multi_head.size())
+        multi_head = multi_head.view(-1, batch_size, self.num_heads, self.head_embed_size)
+        multi_head = multi_head.contiguous().view(-1, batch_size, embed_dim)
+        multi_head = self.out_proj(multi_head) #multi_head.size = [tgt_time_steps, batch_size, embed_dim]
+
+        if need_weights:
+            attn_weights = attention_kqv.view(self.num_heads, batch_size, -1, key.size(0))
+            # print('detect nan in weights')
+            # print(torch.isnan(attn_weights).any())
+            #print('attn_weights check')
+            #print(attn_weights.size())
+        else:
+            attn_weights = None
+        
+        attn = multi_head
         # TODO: --------------------------------------------------------------------- CUT
 
         '''
         ___QUESTION-7-MULTIHEAD-ATTENTION-END
         '''
-
+        # print('detect nan in attn')
+        # print(torch.isnan(attn).any())
         return attn, attn_weights
 
 

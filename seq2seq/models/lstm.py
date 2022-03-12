@@ -51,6 +51,8 @@ class LSTMModel(Seq2SeqModel):
             decoder_pretrained_embedding = utils.load_embedding(args.decoder_embed_path, tgt_dict)
 
         # Construct the encoder
+        print('Encoder layer:{}'.format(args.encoder_num_layers))
+        print('Decoder layer:{}'.format(args.decoder_num_layers))
         encoder = LSTMEncoder(dictionary=src_dict,
                               embed_dim=args.encoder_embed_dim,
                               hidden_size=args.encoder_hidden_size,
@@ -294,9 +296,11 @@ class LSTMDecoder(Seq2SeqDecoder):
 
         self.use_lexical_model = use_lexical_model
         if self.use_lexical_model:
+            print('using lexical model')
             # __QUESTION-5: Add parts of decoder architecture corresponding to the LEXICAL MODEL here
             # TODO: --------------------------------------------------------------------- CUT
-            pass
+            self.hidden_proj = nn.Linear(embed_dim, embed_dim, bias=False) # W*f_t
+            self.lexical_out_proj = nn.Linear(embed_dim, len(dictionary), bias=True) # W*h^l_t + b^l
             # TODO: --------------------------------------------------------------------- /CUT
 
     def forward(self, tgt_inputs, encoder_out, incremental_state=None):
@@ -388,7 +392,17 @@ class LSTMDecoder(Seq2SeqDecoder):
                 if self.use_lexical_model:
                     # __QUESTION-5: Compute and collect LEXICAL MODEL context vectors here
                     # TODO: --------------------------------------------------------------------- CUT
-                    pass
+                    #src_embedding.size = [src_time_steps, batch_size, num_features]
+                    src_transposed = src_embeddings.transpose(0,1)
+                    #src_embedding.size = [batch_size,src_time_steps, num_features]
+                    f_lt = torch.tanh(torch.bmm(step_attn_weights.unsqueeze(1), src_transposed))
+                    #f_t.size = [batch_size, 1, num_features]
+                    f_lt = f_lt.squeeze(1)
+                    #f_t.size = [batch_size, num_features]
+                    h_lt = torch.tanh(self.hidden_proj(f_lt)) + f_lt
+                    #h_lt.size = [batch_size, num_features]
+                    lexical_contexts.append(h_lt)
+                    #lexical_context.size will be [tgt_time_steps, batch_size, num_features]
                     # TODO: --------------------------------------------------------------------- /CUT
 
             input_feed = F.dropout(input_feed, p=self.dropout_out, training=self.training)
@@ -423,7 +437,7 @@ class LSTMDecoder(Seq2SeqDecoder):
         if self.use_lexical_model:
             # __QUESTION-5: Incorporate the LEXICAL MODEL into the prediction of target tokens here
             # TODO: --------------------------------------------------------------------- CUT
-            pass
+            decoder_output = decoder_output + self.lexical_out_proj(torch.stack(lexical_contexts).transpose(0,1))
             # TODO: --------------------------------------------------------------------- /CUT
 
         return decoder_output, attn_weights
